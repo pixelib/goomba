@@ -3,5 +3,5 @@ dist/
 **/*.exe
 
 # ignore internal/embeddedsk/apple-sdk-lite
-internal/embeddedsk/apple-sdk-lite/
+internal/embeddedsk/sdk.zip
 internal/embeddedsk/sdk_marker.txt
