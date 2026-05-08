@@ -21,6 +21,7 @@ Simply put, it's the perfect matrix build tool for in CI/CD pipelines and local 
 
 Quick example:
 > `goomba build --platforms linux,windows,darwin --arch x64,arm64 --go-args="-tags=prod"`
+> <img src=".github/screenshot.png" alt="goomba screenshot"/>
 
 ## goals
 - single binary, no required system tools besides what goomba downloads
