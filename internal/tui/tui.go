@@ -554,7 +554,7 @@ func trimLine(line string) string {
 	if w, _, err := getTerminalSize(); err == nil {
 		termWidth = w
 	} else {
-		termWidth = 180
+		termWidth = 80
 	}
 	if len(line) <= termWidth {
 		return line

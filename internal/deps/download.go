@@ -57,7 +57,7 @@ func downloadFile(ctx context.Context, url, dest string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("download failed: %s", resp.Status)
+		return "", fmt.Errorf("download failed: %s url: %s", resp.Status, url)
 	}
 
 	file, err := os.Create(dest)
@@ -84,7 +84,7 @@ func zigPlatform() string {
 	if goarch == "arm64" {
 		goarch = "aarch64"
 	}
-	return fmt.Sprintf("%s-%s", goos, goarch)
+	return fmt.Sprintf("%s-%s", goarch, goos)
 }
 
 func zigBinName() string {

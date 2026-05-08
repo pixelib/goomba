@@ -35,11 +35,11 @@ func runBuild(args []string) int {
 	var noParallel bool
 	var noTui bool
 	var noValidation bool
-	var cgoEnabled bool
 	var strict bool
 	var verbose bool
 	var javaHome string
 	var goArgs argsList
+	var cgoEnabled bool
 
 	fs.StringVar(&platforms, "platforms", "", "comma separated platforms")
 	fs.StringVar(&archs, "arch", "", "comma separated architectures")
@@ -50,7 +50,7 @@ func runBuild(args []string) int {
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.StringVar(&javaHome, "java-home", "", "override JAVA_HOME for JNI includes")
 	fs.Var(&goArgs, "go-args", "additional go build arguments, repeatable")
-	fs.BoolVar(&cgoEnabled, "cgo-enabled", false, "enable cgo for builds")
+	fs.BoolVar(&cgoEnabled, "cgo-enabled", false, "enable CGO for builds")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {

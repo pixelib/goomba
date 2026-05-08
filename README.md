@@ -54,7 +54,6 @@ goomba build -- --buildmode=c-shared -o dist/libshared.so
 - --verbose: enable verbose logging
 - --java-home: override JAVA_HOME for JNI includes
 - --go-args: append go build args, repeatable
-- --cgo-enabled: enable cgo for all targets, overwritten by CGO_ENABLED env var if set
 
 By default, failed targets are logged and skipped while the rest continue.
 

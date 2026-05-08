@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"goomba/internal/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 const (
 	defaultGoVersion  = "1.22.5"
-	defaultZigVersion = "0.12.0"
+	defaultZigVersion = "0.15.0"
 	defaultMacSDK     = "11.3"
 )
 
@@ -49,6 +50,7 @@ func (g GoTool) EnvOverrides() map[string]string {
 		overrides["GOROOT"] = g.Root
 		overrides["PATH"] = prependPath(filepath.Join(g.Root, "bin"), os.Getenv("PATH"))
 	}
+	overrides["STRIP"] = "true" // This effectively disables the strip command
 	return overrides
 }
 
@@ -151,6 +153,9 @@ func EnsureMacSDK(ctx context.Context) (MacSDK, error) {
 	installDir := filepath.Join(cacheRoot, "macos-sdk", defaultMacSDK)
 	sdkPath := filepath.Join(installDir, "MacOSX"+defaultMacSDK+".sdk")
 	if stat, err := os.Stat(sdkPath); err == nil && stat.IsDir() {
+		if sdkFixErr := util.FixMacosSDK(sdkPath); sdkFixErr != nil {
+			return MacSDK{}, fmt.Errorf("failed to fix macOS SDK: %w", sdkFixErr)
+		}
 		return MacSDK{Path: sdkPath}, nil
 	}
 
@@ -161,6 +166,18 @@ func EnsureMacSDK(ctx context.Context) (MacSDK, error) {
 	if err := extractArchive(archive, installDir); err != nil {
 		return MacSDK{}, err
 	}
+
+	// Inside EnsureMacSDK after extraction:
+	cfDir := filepath.Join(sdkPath, "System/Library/Frameworks/CoreFoundation.framework/Versions/A")
+	tbd := filepath.Join(cfDir, "CoreFoundation.tbd")
+	sym := filepath.Join(cfDir, "CoreFoundation")
+
+	if _, err := os.Stat(tbd); err == nil {
+		if _, err := os.Stat(sym); os.IsNotExist(err) {
+			_ = os.Symlink("CoreFoundation.tbd", sym)
+		}
+	}
+
 	if stat, err := os.Stat(sdkPath); err == nil && stat.IsDir() {
 		return MacSDK{Path: sdkPath}, nil
 	}
@@ -222,9 +239,33 @@ func CgoEnv(goos, goarch string, zigTool *ZigTool, macSDK *MacSDK) map[string]st
 			}
 		}
 		if macSDK != nil {
+			frameworkPath := filepath.Join(macSDK.Path, "System", "Library", "Frameworks")
+			libPath := filepath.Join(macSDK.Path, "usr", "lib")
+
 			overrides["SDKROOT"] = macSDK.Path
-			overrides["CGO_CFLAGS"] = appendFlag(os.Getenv("CGO_CFLAGS"), "-isysroot", macSDK.Path)
-			overrides["CGO_LDFLAGS"] = appendFlag(os.Getenv("CGO_LDFLAGS"), "-isysroot", macSDK.Path)
+
+			// CFLAGS: Tell the compiler where headers and framework headers live
+			cflags := appendFlag(os.Getenv("CGO_CFLAGS"), "-isysroot", macSDK.Path)
+			cflags = appendFlag(cflags, "-iframework", frameworkPath)
+
+			// LDFLAGS: This is where the magic happens
+			ldflags := appendFlag(os.Getenv("CGO_LDFLAGS"), "-isysroot", macSDK.Path)
+			ldflags = appendFlag(ldflags, "-F", frameworkPath)
+			ldflags = appendFlag(ldflags, "-L", libPath)
+
+			// FORCE external linking mode so Zig handles the final Mach-O creation
+			// and add -headerpad for Go's internal linker requirements
+			//ldflags = appendFlag(ldflags, "-linkmode", "external")
+
+			//
+			ldflags = appendFlag(ldflags, "-s", "")
+			ldflags = appendFlag(ldflags, "-w", "")
+
+			overrides["CGO_CFLAGS"] = cflags
+			overrides["CGO_LDFLAGS"] = ldflags
+
+			// Target 11.0 to ensure TBD v4 compatibility in Zig
+			overrides["MACOSX_DEPLOYMENT_TARGET"] = "11.0"
 		}
 	}
 
@@ -280,6 +321,23 @@ func zigWrapperScript(zigPath, mode, goos, goarch string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("@echo off\r\n\"%s\" %s -target %s %%*\r\n", zigPath, mode, zigTarget(goos, goarch))
 	}
+
 	quoted := strings.ReplaceAll(zigPath, "\"", "\\\"")
-	return fmt.Sprintf("#!/usr/bin/env sh\nexec \"%s\" %s -target %s \"$@\"\n", quoted, mode, zigTarget(goos, goarch))
+	target := zigTarget(goos, goarch)
+
+	// Using a proper array-based approach in shell to filter flags
+	return fmt.Sprintf(`#!/usr/bin/env sh
+# Filter out incompatible flags
+args=""
+for arg in "$@"; do
+  if [ "$arg" = "-Wl,--compress-debug-sections=zlib" ]; then
+    continue
+  fi
+  # This builds a list of arguments properly handled by 'set'
+  set -- "$@" "$arg"
+  shift
+done
+
+exec "%s" %s -target %s "$@"
+`, quoted, mode, target)
 }

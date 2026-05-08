@@ -231,7 +231,6 @@ func buildTarget(ctx context.Context, cfg Config, goTool deps.GoTool, target Tar
 	if cfg.JavaHome != "" {
 		cmd.Env = util.EnvWithOverrides(cmd.Env, map[string]string{"JAVA_HOME": cfg.JavaHome})
 	}
-
 	if cfg.CgoEnabled {
 		cmd.Env = util.EnvWithOverrides(cmd.Env, map[string]string{"CGO_ENABLED": "1"})
 	}
@@ -243,12 +242,6 @@ func buildTarget(ctx context.Context, cfg Config, goTool deps.GoTool, target Tar
 		"GOOMBA_ARCH":     target.GOARCH,
 		"GOOMBA_PLATFORM": target.Label,
 	}
-
-	// fix common error if gopath and goroot are the same, which causes go build to write to stdout instead of stderr
-	if goTool.Root != "" && os.Getenv("GOPATH") == goTool.Root {
-		overrides["GOPATH"] = goTool.Root + "_gopath"
-	}
-
 	if env := deps.CgoEnv(target.GOOS, target.GOARCH, zigTool, macSDK); len(env) > 0 {
 		for k, v := range env {
 			overrides[k] = v
@@ -259,6 +252,7 @@ func buildTarget(ctx context.Context, cfg Config, goTool deps.GoTool, target Tar
 			overrides[k] = v
 		}
 	}
+
 	for key, val := range overrides {
 		overrides[key] = expandPlaceholders(val, target)
 	}
