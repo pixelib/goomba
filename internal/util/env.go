@@ -1,6 +1,8 @@
 package util
 
-import "strings"
+import (
+	"strings"
+)
 
 func EnvWithOverrides(base []string, overrides map[string]string) []string {
 	seen := map[string]bool{}
@@ -21,5 +23,6 @@ func EnvWithOverrides(base []string, overrides map[string]string) []string {
 			out = append(out, key+"="+val)
 		}
 	}
+
 	return out
 }

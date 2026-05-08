@@ -22,6 +22,7 @@ type UI struct {
 	ticker    *time.Ticker
 	tickDone  chan struct{}
 	logLimit  int
+	verbose   bool
 }
 
 type phaseState struct {
@@ -403,10 +404,10 @@ func (u *UI) collectLines() []string {
 
 	// Render Phase Output
 	if u.phase != nil {
-		lines = append(lines, trimLine(u.renderPhaseLine()))
+		lines = append(lines, trimLine(u.renderPhaseLine(), u))
 		for _, line := range u.phase.logs {
 			// Added colored pipe and dimmed log text
-			lines = append(lines, fmt.Sprintf("    %s│%s %s%s%s", cCyan, cReset, cDim, trimLine(line), cReset))
+			lines = append(lines, fmt.Sprintf("    %s│%s %s%s%s", cCyan, cReset, cDim, trimLine(line, u), cReset))
 		}
 	}
 
@@ -425,10 +426,10 @@ func (u *UI) collectLines() []string {
 		}
 		for _, label := range labels {
 			state := u.builds[label]
-			lines = append(lines, trimLine(u.renderBuildLine(label, state)))
+			lines = append(lines, trimLine(u.renderBuildLine(label, state), u))
 			for _, logLine := range state.logs {
 				// Added colored pipe for sub-items
-				lines = append(lines, fmt.Sprintf("      %s│%s %s%s%s", cDim, cReset, cDim, trimLine(logLine), cReset))
+				lines = append(lines, fmt.Sprintf("      %s│%s %s%s%s", cDim, cReset, cDim, trimLine(logLine, u), cReset))
 			}
 		}
 	}
@@ -548,7 +549,11 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
-func trimLine(line string) string {
+func trimLine(line string, ui *UI) string {
+	if ui.verbose {
+		return line
+	}
+
 	// get current terminal width if possible, otherwise use a reasonable default
 	var termWidth int
 	if w, _, err := getTerminalSize(); err == nil {

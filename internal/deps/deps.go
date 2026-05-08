@@ -50,7 +50,6 @@ func (g GoTool) EnvOverrides() map[string]string {
 		overrides["GOROOT"] = g.Root
 		overrides["PATH"] = prependPath(filepath.Join(g.Root, "bin"), os.Getenv("PATH"))
 	}
-	overrides["STRIP"] = "true" // This effectively disables the strip command
 	return overrides
 }
 
@@ -139,11 +138,11 @@ type MacSDK struct {
 }
 
 func EnsureMacSDK(ctx context.Context) (MacSDK, error) {
-	if root := os.Getenv("SDKROOT"); root != "" {
-		if stat, err := os.Stat(root); err == nil && stat.IsDir() {
-			return MacSDK{Path: root}, nil
-		}
-	}
+	//if root := os.Getenv("SDKROOT"); root != "" {
+	//	if stat, err := os.Stat(root); err == nil && stat.IsDir() {
+	//		return MacSDK{Path: root}, nil
+	//	}
+	//}
 
 	cacheRoot, err := cacheDir()
 	if err != nil {
@@ -231,41 +230,78 @@ func CgoEnv(goos, goarch string, zigTool *ZigTool, macSDK *MacSDK) map[string]st
 		overrides["ZIG_GLOBAL_CACHE_DIR"] = zigCache
 	}
 
-	if goos == "darwin" && runtime.GOOS != "darwin" {
+	//if goos == "darwin" && runtime.GOOS != "darwin" {
+	//	if macSDK == nil {
+	//		sdk, err := EnsureMacSDK(context.Background())
+	//		if err == nil {
+	//			macSDK = &sdk
+	//		}
+	//	}
+	//	if macSDK != nil {
+	//		frameworkPath := filepath.Join(macSDK.Path, "System", "Library", "Frameworks")
+	//		libPath := filepath.Join(macSDK.Path, "usr", "lib")
+	//
+	//		overrides["SDKROOT"] = macSDK.Path
+	//
+	//		// CFLAGS: Tell the compiler where headers and framework headers live
+	//		cflags := appendFlag(os.Getenv("CGO_CFLAGS"), "-isysroot", macSDK.Path)
+	//		cflags = appendFlag(cflags, "-iframework", frameworkPath)
+	//
+	//		// LDFLAGS: This is where the magic happens
+	//		ldflags := appendFlag(os.Getenv("CGO_LDFLAGS"), "-isysroot", macSDK.Path)
+	//		ldflags = appendFlag(ldflags, "-F", frameworkPath)
+	//		ldflags = appendFlag(ldflags, "-L", libPath)
+	//
+	//		// FORCE external linking mode so Zig handles the final Mach-O creation
+	//		// and add -headerpad for Go's internal linker requirements
+	//		//ldflags = appendFlag(ldflags, "-linkmode", "external")
+	//
+	//		//
+	//		ldflags = appendFlag(ldflags, "-s", "")
+	//		ldflags = appendFlag(ldflags, "-w", "")
+	//
+	//		overrides["CGO_CFLAGS"] = cflags
+	//		overrides["CGO_LDFLAGS"] = ldflags
+	//
+	//		// Target 11.0 to ensure TBD v4 compatibility in Zig
+	//		overrides["MACOSX_DEPLOYMENT_TARGET"] = "11.0"
+	//	}
+	//}
+	if goos == "darwin" {
 		if macSDK == nil {
+			// Prefer real SDK from xcrun first
 			sdk, err := EnsureMacSDK(context.Background())
 			if err == nil {
 				macSDK = &sdk
 			}
 		}
+
 		if macSDK != nil {
 			frameworkPath := filepath.Join(macSDK.Path, "System", "Library", "Frameworks")
 			libPath := filepath.Join(macSDK.Path, "usr", "lib")
 
 			overrides["SDKROOT"] = macSDK.Path
 
-			// CFLAGS: Tell the compiler where headers and framework headers live
-			cflags := appendFlag(os.Getenv("CGO_CFLAGS"), "-isysroot", macSDK.Path)
+			cflags := os.Getenv("CGO_CFLAGS")
+			cflags = appendFlag(cflags, "-isysroot", macSDK.Path)
 			cflags = appendFlag(cflags, "-iframework", frameworkPath)
 
-			// LDFLAGS: This is where the magic happens
-			ldflags := appendFlag(os.Getenv("CGO_LDFLAGS"), "-isysroot", macSDK.Path)
+			ldflags := os.Getenv("CGO_LDFLAGS")
+			ldflags = appendFlag(ldflags, "-isysroot", macSDK.Path)
 			ldflags = appendFlag(ldflags, "-F", frameworkPath)
 			ldflags = appendFlag(ldflags, "-L", libPath)
 
-			// FORCE external linking mode so Zig handles the final Mach-O creation
-			// and add -headerpad for Go's internal linker requirements
-			//ldflags = appendFlag(ldflags, "-linkmode", "external")
-
-			//
-			ldflags = appendFlag(ldflags, "-s", "")
-			ldflags = appendFlag(ldflags, "-w", "")
+			// Fix 1: Ensure Mach-O headers have enough padding for Apple tools
+			ldflags = appendFlag(ldflags, "-Wl,-headerpad,1144", "")
 
 			overrides["CGO_CFLAGS"] = cflags
 			overrides["CGO_LDFLAGS"] = ldflags
-
-			// Target 11.0 to ensure TBD v4 compatibility in Zig
 			overrides["MACOSX_DEPLOYMENT_TARGET"] = "11.0"
+
+			// Fix 2: Force Go to skip the strip phase to avoid the __LLVM segment error
+			// We wrap the flags in quotes so GOFLAGS parses it as a single argument
+			existingGoFlags := os.Getenv("GOFLAGS")
+			overrides["GOFLAGS"] = appendFlag(existingGoFlags, "-ldflags=-s -w", "")
 		}
 	}
 
@@ -273,10 +309,14 @@ func CgoEnv(goos, goarch string, zigTool *ZigTool, macSDK *MacSDK) map[string]st
 }
 
 func appendFlag(existing, flag, value string) string {
-	if existing == "" {
-		return fmt.Sprintf("%s %s", flag, value)
+	newPart := flag
+	if value != "" {
+		newPart += " " + value
 	}
-	return fmt.Sprintf("%s %s %s", existing, flag, value)
+	if existing == "" {
+		return newPart
+	}
+	return existing + " " + newPart
 }
 
 func zigWrapperPaths(zigPath, goos, goarch string) (string, string) {
