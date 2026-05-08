@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13  # Intel Mac
+    runs-on: blacksmith-6vcpu-macos-15  # Intel Mac
 
     steps:
       - name: Checkout
