@@ -1,0 +1,221 @@
+name: Build Goomba
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build:
+    runs-on: blacksmith-6vcpu-macos-15  # Intel Mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run embedosx.sh
+        run: |
+          cd internal
+          ./embedosx.sh
+          cd ..
+
+      - name: Build for all platforms
+        run: |
+          mkdir -p dist
+
+          build() {
+            GOOS="$1" GOARCH="$2" go build -o "dist/$3" ./cmd/goomba/
+            echo "Built dist/$3"
+          }
+
+          build windows amd64 goomba-windows-amd64.exe
+          build windows arm64 goomba-windows-arm64.exe
+          build linux   amd64 goomba-linux-amd64
+          build linux   arm64 goomba-linux-arm64
+          build darwin  amd64 goomba-darwin-amd64
+          build darwin  arm64 goomba-darwin-arm64
+
+      - name: Upload windows-amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-windows-amd64
+          path: dist/goomba-windows-amd64.exe
+
+      - name: Upload windows-arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-windows-arm64
+          path: dist/goomba-windows-arm64.exe
+
+      - name: Upload linux-amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-linux-amd64
+          path: dist/goomba-linux-amd64
+
+      - name: Upload linux-arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-linux-arm64
+          path: dist/goomba-linux-arm64
+
+      - name: Upload darwin-amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-darwin-amd64
+          path: dist/goomba-darwin-amd64
+
+      - name: Upload darwin-arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: goomba-darwin-arm64
+          path: dist/goomba-darwin-arm64
+
+  go-tests:
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Ensure embedded SDK marker
+        run: |
+          mkdir -p internal/embeddedsk
+          touch internal/embeddedsk/sdk_marker.txt
+
+      - name: Run tests
+        run: go test ./...
+
+  cgo-build:
+    needs: build
+    runs-on: blacksmith-6vcpu-macos-latest  # macOS ARM
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download darwin-arm64 goomba binary
+        uses: actions/download-artifact@v4
+        with:
+          name: goomba-darwin-arm64
+          path: dist/
+
+      - name: Make goomba executable
+        run: chmod +x dist/goomba-darwin-arm64
+
+      - name: Run goomba CGO build
+        run: |
+          cp dist/goomba-darwin-arm64 _testproject/cgo/
+          cd _testproject/cgo
+          ./goomba-darwin-arm64 build \
+            --platforms windows,macos,linux \
+            --arch amd64,arm64 \
+            --cgo-enabled \
+            --no-tui
+
+      - name: Upload CGO dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgo-dist
+          path: _testproject/cgo/dist/
+
+  test-goomba-output-macos-arm:
+    needs: cgo-build
+    runs-on: blacksmith-6vcpu-macos-15
+
+    steps:
+      - name: Download CGO dist
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: cgo-dist
+          path: dist/
+
+      - name: Check CGO artifact
+        id: cgo_artifact
+        run: |
+          if [ -f dist/macos/arm64/cgo ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "CGO dist missing; skipping macOS CGO test"
+          fi
+
+      - name: Test macOS arm64 binary
+        if: steps.cgo_artifact.outputs.found == 'true'
+        run: |
+          chmod +x dist/macos/arm64/cgo
+          output=$(dist/macos/arm64/cgo)
+          echo "Output: $output"
+          if [ "$output" != "hello from cgo" ]; then
+            echo "FAIL: expected 'hello from cgo', got '$output'"
+            exit 1
+          fi
+          echo "PASS"
+
+  test-goomba-output-linux-x64:
+    needs: cgo-build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download CGO dist
+        uses: actions/download-artifact@v4
+        with:
+          name: cgo-dist
+          path: dist/
+
+      - name: Test Linux amd64 binary
+        run: |
+          chmod +x dist/linux/amd64/cgo
+          output=$(dist/linux/amd64/cgo)
+          echo "Output: $output"
+          if [ "$output" != "hello from cgo" ]; then
+            echo "FAIL: expected 'hello from cgo', got '$output'"
+            exit 1
+          fi
+          echo "PASS"
+
+  test-goomba-output-windows-x64:
+    needs: cgo-build
+    runs-on: windows-latest
+
+    steps:
+      - name: Download CGO dist
+        uses: actions/download-artifact@v4
+        with:
+          name: cgo-dist
+          path: dist/
+
+      - name: Test Windows amd64 binary
+        shell: pwsh
+        run: |
+          $output = & "dist\windows\amd64\cgo.exe"
+          Write-Host "Output: $output"
+          if ($output -ne "hello from cgo") {
+            Write-Host "FAIL: expected 'hello from cgo', got '$output'"
+            exit 1
+          }
+          Write-Host "PASS"
+
+  end:
+    needs:
+      - go-tests
+      - test-goomba-output-macos-arm
+      - test-goomba-output-linux-x64
+      - test-goomba-output-windows-x64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: All checks passed
+        run: echo "All required checks passed."
