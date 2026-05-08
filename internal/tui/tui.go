@@ -7,6 +7,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -23,6 +24,10 @@ type UI struct {
 	tickDone  chan struct{}
 	logLimit  int
 	verbose   bool
+	// sealed prevents any further rendering (after Close/BuildEnd)
+	sealed bool
+	// buildStart is set when BuildStart is called, used for the final report
+	buildStart time.Time
 }
 
 type phaseState struct {
@@ -115,6 +120,7 @@ func (u *UI) BuildStart(labels []string) {
 	defer u.mu.Unlock()
 	u.builds = map[string]buildState{}
 	u.order = append([]string(nil), labels...)
+	u.buildStart = time.Now()
 	for _, label := range labels {
 		u.builds[label] = buildState{status: "queued"}
 	}
@@ -149,16 +155,99 @@ func (u *UI) BuildUpdate(label, status, detail string) {
 	u.renderAllLocked()
 }
 
+// BuildEnd finalises the build section: clears the live UI block, prints a
+// static summary report, then re-enables the cursor. Calling it twice is a no-op.
 func (u *UI) BuildEnd() {
 	if !u.enabled {
 		return
 	}
+	// Stop the ticker outside the lock to avoid a deadlock with the ticker
+	// goroutine (which also acquires u.mu). This ensures no further renders
+	// can race with the static report we are about to print.
+	u.stopTicker()
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.renderAllLocked()
-	fmt.Fprintln(u.out)
+	if u.sealed {
+		return
+	}
+	u.sealed = true
+
+	// Erase the live block before printing the static report.
+	u.eraseLocked()
+	u.printReportLocked()
 	fmt.Fprint(u.out, cursorShow)
-	u.lastLines = 0
+}
+
+// printReportLocked prints a static, permanent build summary.
+// Must be called with u.mu held.
+func (u *UI) printReportLocked() {
+	total := time.Since(u.buildStart)
+	if u.buildStart.IsZero() {
+		total = 0
+	}
+
+	labels := u.order
+	if len(labels) == 0 {
+		for l := range u.builds {
+			labels = append(labels, l)
+		}
+		labels = stableSort(labels)
+	}
+
+	ok, failed := 0, 0
+	for _, l := range labels {
+		if u.builds[l].status == "done" {
+			ok++
+		} else if u.builds[l].status == "error" {
+			failed++
+		}
+	}
+
+	// Header line
+	if failed > 0 {
+		fmt.Fprintf(u.out, "%s%s✗ Build failed%s", cBold, cRed, cReset)
+	} else {
+		fmt.Fprintf(u.out, "%s%s✓ Build complete%s", cBold, cGreen, cReset)
+	}
+	fmt.Fprintf(u.out, "  %s%d built", cDim, ok)
+	if failed > 0 {
+		fmt.Fprintf(u.out, "  %d failed", failed)
+	}
+	fmt.Fprintf(u.out, "  total %s%s\n", formatDuration(total), cReset)
+
+	// Per-target rows
+	for _, label := range labels {
+		state := u.builds[label]
+		dur := buildElapsed(state)
+
+		var icon, col string
+		switch state.status {
+		case "done":
+			icon, col = "✓", cGreen
+		case "error":
+			icon, col = "✗", cRed
+		default:
+			icon, col = "○", cDim
+		}
+
+		fmt.Fprintf(u.out, "  %s%s%s  %s  %s%s%s\n",
+			col, icon, cReset,
+			formatBuildLabel(label),
+			cDim, formatDuration(dur), cReset,
+		)
+
+		// Print error detail and logs under any failed target
+		if state.status == "error" {
+			if state.detail != "" {
+				fmt.Fprintf(u.out, "     %s%s%s\n", cRed, state.detail, cReset)
+			}
+			for _, line := range state.logs {
+				fmt.Fprintf(u.out, "     %s%s%s\n", cDim, line, cReset)
+			}
+		}
+	}
+	fmt.Fprintln(u.out)
 }
 
 func (u *UI) Close() {
@@ -166,6 +255,11 @@ func (u *UI) Close() {
 		return
 	}
 	u.stopTicker()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.sealed {
+		u.eraseLocked()
+	}
 	fmt.Fprint(u.out, cursorShow)
 }
 
@@ -195,6 +289,8 @@ func (p *Phase) Log(line string) {
 		return
 	}
 	p.ui.phase.logs = appendLog(p.ui.phase.logs, line, p.ui.logLimit)
+	// Re-render so the new log line appears immediately.
+	p.ui.renderAllLocked()
 }
 
 func (p *Phase) Done() {
@@ -240,23 +336,45 @@ func (u *UI) BuildLog(label, line string) {
 	state := u.builds[label]
 	state.logs = appendLog(state.logs, line, u.logLimit)
 	u.builds[label] = state
+	// Re-render so log appears immediately.
+	u.renderAllLocked()
 }
 
-func (u *UI) renderAllLocked() {
-	if !u.enabled {
+// eraseLocked moves the cursor back to the start of the UI block and clears
+// every line that was previously rendered. It resets lastLines to 0.
+// Must be called with u.mu held.
+func (u *UI) eraseLocked() {
+	if u.lastLines == 0 {
 		return
 	}
-	// Move cursor to the start of the UI block
-	if u.lastLines > 0 {
-		fmt.Fprintf(u.out, "\x1b[%dF", u.lastLines)
+	// Move up to the first line of our block.
+	fmt.Fprintf(u.out, "\x1b[%dF", u.lastLines)
+	// Clear from cursor to end of screen.
+	fmt.Fprint(u.out, "\x1b[0J")
+	u.lastLines = 0
+}
+
+// renderAllLocked erases the previous UI block and redraws it.
+// Must be called with u.mu held.
+func (u *UI) renderAllLocked() {
+	if !u.enabled || u.sealed {
+		return
 	}
 
 	lines := u.collectLines()
-	for _, line := range lines {
-		// \r = carriage return (start of line)
-		// \x1b[2K = clear entire line
-		fmt.Fprintf(u.out, "\r\x1b[2K%s\n", line)
+
+	// Erase the previous block (move up + clear-to-end).
+	if u.lastLines > 0 {
+		fmt.Fprintf(u.out, "\x1b[%dF", u.lastLines)
+		fmt.Fprint(u.out, "\x1b[0J")
 	}
+
+	// Draw every line fresh. We write a trailing newline after each line so
+	// the cursor always ends on a fresh line below the last rendered line.
+	for _, line := range lines {
+		fmt.Fprintf(u.out, "%s\n", line)
+	}
+
 	u.lastLines = len(lines)
 }
 
@@ -264,7 +382,7 @@ func (u *UI) startTicker() {
 	if u.ticker != nil {
 		return
 	}
-	u.ticker = time.NewTicker(80 * time.Millisecond) // Faster tick for smooth spinners
+	u.ticker = time.NewTicker(80 * time.Millisecond)
 	u.tickDone = make(chan struct{})
 	go func() {
 		for {
@@ -317,8 +435,6 @@ func (u *UI) renderPhaseLine() string {
 		case "error":
 			color = cRed
 			icon = "❌"
-		case "running":
-			color = cCyan
 		}
 		if u.phase.status == "done" || u.phase.status == "error" {
 			percent = 100
@@ -348,9 +464,9 @@ func (u *UI) renderBuildLine(label string, state buildState) string {
 	line := fmt.Sprintf("  %s [%s] %s %s(%s)%s", icon, bar, formatBuildLabel(label), cDim, elapsed, cReset)
 
 	if state.status == "error" && state.detail != "" {
-		line += fmt.Sprintf(" %s— %s%s", cDim, cRed, state.detail)
+		line += fmt.Sprintf(" %s— %s%s", cDim, cRed+state.detail, cReset)
 	} else if state.detail != "" {
-		line += fmt.Sprintf(" %s— %s%s", cDim, cReset, state.detail)
+		line += fmt.Sprintf(" %s— %s%s", cDim, cReset+state.detail, cReset)
 	}
 	return line
 }
@@ -402,16 +518,15 @@ func barForStatus(status string, elapsed time.Duration) string {
 func (u *UI) collectLines() []string {
 	var lines []string
 
-	// Render Phase Output
+	// Phase section
 	if u.phase != nil {
-		lines = append(lines, trimLine(u.renderPhaseLine(), u))
+		lines = append(lines, u.trimLine(u.renderPhaseLine()))
 		for _, line := range u.phase.logs {
-			// Added colored pipe and dimmed log text
-			lines = append(lines, fmt.Sprintf("    %s│%s %s%s%s", cCyan, cReset, cDim, trimLine(line, u), cReset))
+			lines = append(lines, fmt.Sprintf("    %s│%s %s%s%s", cCyan, cReset, cDim, u.trimLine(line), cReset))
 		}
 	}
 
-	// Render Individual Builds Output
+	// Builds section – only add the blank separator when both sections are non-empty
 	if len(u.builds) > 0 {
 		if len(lines) > 0 {
 			lines = append(lines, "")
@@ -426,10 +541,9 @@ func (u *UI) collectLines() []string {
 		}
 		for _, label := range labels {
 			state := u.builds[label]
-			lines = append(lines, trimLine(u.renderBuildLine(label, state), u))
+			lines = append(lines, u.trimLine(u.renderBuildLine(label, state)))
 			for _, logLine := range state.logs {
-				// Added colored pipe for sub-items
-				lines = append(lines, fmt.Sprintf("      %s│%s %s%s%s", cDim, cReset, cDim, trimLine(logLine, u), cReset))
+				lines = append(lines, fmt.Sprintf("      %s│%s %s%s%s", cDim, cReset, cDim, u.trimLine(logLine), cReset))
 			}
 		}
 	}
@@ -447,8 +561,6 @@ func renderBar(width, percent int, color string) string {
 
 	fill := int(float64(width) * (float64(percent) / 100))
 
-	// Using dots/lines for a slimmer profile
-	// Completed: ━━━ Unfinished: ───
 	filled := color + strings.Repeat("━", fill) + cReset
 	empty := cDim + strings.Repeat("─", width-fill) + cReset
 
@@ -456,17 +568,13 @@ func renderBar(width, percent int, color string) string {
 }
 
 func renderIndeterminateBar(width int, elapsed time.Duration, color string) string {
-	// A more elegant "glimmer" effect using a moving dot on a thin line
 	if width <= 2 {
 		return ".."
 	}
-
-	// cap width at 15
 	if width > 15 {
 		width = 15
 	}
 
-	// Create the background line
 	runes := make([]rune, width)
 	for i := range runes {
 		runes[i] = '─'
@@ -485,7 +593,6 @@ func renderIndeterminateBar(width int, elapsed time.Duration, color string) stri
 		}
 	}
 
-	// We build the string manually to ensure no slicing issues
 	var sb strings.Builder
 	sb.WriteString(cDim)
 	for i, r := range runes {
@@ -536,10 +643,6 @@ func appendLog(lines []string, line string, limit int) []string {
 	return lines
 }
 
-func clearLine(w io.Writer) {
-	fmt.Fprint(w, "\r\x1b[2K")
-}
-
 func formatDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -549,27 +652,78 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
-func trimLine(line string, ui *UI) string {
-	if ui.verbose {
+// stripANSI returns the visible rune count of a string, ignoring ANSI escape sequences.
+func visibleLen(s string) int {
+	n := 0
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// trimLine truncates a line to the terminal width while accounting for ANSI
+// escape codes (which have zero visible width) and multi-byte runes.
+func (u *UI) trimLine(line string) string {
+	if u.verbose {
 		return line
 	}
 
-	// get current terminal width if possible, otherwise use a reasonable default
-	var termWidth int
-	if w, _, err := getTerminalSize(); err == nil {
+	termWidth := 80
+	if w, _, err := getTerminalSize(); err == nil && w > 0 {
 		termWidth = w
-	} else {
-		termWidth = 80
 	}
-	if len(line) <= termWidth {
+
+	if visibleLen(line) <= termWidth {
 		return line
 	}
-	return line[:termWidth-3] + "..."
+
+	// Rebuild the string rune-by-rune, skipping escape sequences, until we
+	// reach termWidth-3 visible characters, then append "...".
+	var sb strings.Builder
+	visible := 0
+	inEsc := false
+	limit := termWidth - 3
+
+	for i := 0; i < len(line); {
+		r, size := utf8.DecodeRuneInString(line[i:])
+		i += size
+
+		if inEsc {
+			sb.WriteRune(r)
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			sb.WriteRune(r)
+			continue
+		}
+
+		if visible >= limit {
+			sb.WriteString(cReset + "...")
+			return sb.String()
+		}
+		sb.WriteRune(r)
+		visible++
+	}
+
+	return sb.String()
 }
 
 func getTerminalSize() (width, height int, err error) {
-	// This is a best effort to get terminal size, it may not work in all environments
-	// and is not critical for functionality, so we ignore errors and return defaults
 	type winsize struct {
 		rows uint16
 		cols uint16
@@ -577,9 +731,9 @@ func getTerminalSize() (width, height int, err error) {
 		y    uint16
 	}
 	ws := &winsize{}
-	retCode, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(ws)))
+	retCode, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(ws)))
 	if retCode != 0 {
-		return 80, 24, err
+		return 80, 24, errno
 	}
 	return int(ws.cols), int(ws.rows), nil
 }
@@ -606,7 +760,6 @@ func formatBuildLabel(label string) string {
 		osColor = cMagenta
 	}
 
-	// Outputs clean layout: linux / amd64
 	return fmt.Sprintf("%s%s%s %s/%s %s%s%s",
 		osColor, osPart, cReset, cDim, cReset, cYellow, archPart, cReset)
 }

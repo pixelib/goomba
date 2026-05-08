@@ -66,7 +66,7 @@ func Run(ctx context.Context, cfg Config) error {
 				reqs.NeedZig = true
 			}
 		}
-		if target.GOOS == "darwin" && runtime.GOOS != "darwin" && os.Getenv("SDKROOT") == "" {
+		if target.GOOS == "darwin" && os.Getenv("SDKROOT") == "" {
 			reqs.NeedMacSDK = true
 		}
 	}
@@ -74,7 +74,7 @@ func Run(ctx context.Context, cfg Config) error {
 	var zigTool *deps.ZigTool
 	var macSDK *deps.MacSDK
 	if reqs.Any() {
-		downPhase := ui.NewPhase("downloading dependencies", 0)
+		downPhase := ui.NewPhase("Preparing toolchain...", 0)
 		if reqs.NeedZig {
 			downPhase.Log("Preparing zig toolchain...")
 			tool, err := deps.EnsureZig(ctx)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"goomba/internal/util"
+	"goomba/internal/embeddedsk"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +15,6 @@ import (
 const (
 	defaultGoVersion  = "1.22.5"
 	defaultZigVersion = "0.15.0"
-	defaultMacSDK     = "11.3"
 )
 
 type Requirements struct {
@@ -138,49 +137,24 @@ type MacSDK struct {
 }
 
 func EnsureMacSDK(ctx context.Context) (MacSDK, error) {
-	//if root := os.Getenv("SDKROOT"); root != "" {
-	//	if stat, err := os.Stat(root); err == nil && stat.IsDir() {
-	//		return MacSDK{Path: root}, nil
-	//	}
-	//}
-
 	cacheRoot, err := cacheDir()
 	if err != nil {
 		return MacSDK{}, err
 	}
+	installDir := filepath.Join(cacheRoot, "macos-sdk")
 
-	installDir := filepath.Join(cacheRoot, "macos-sdk", defaultMacSDK)
-	sdkPath := filepath.Join(installDir, "MacOSX"+defaultMacSDK+".sdk")
-	if stat, err := os.Stat(sdkPath); err == nil && stat.IsDir() {
-		if sdkFixErr := util.FixMacosSDK(sdkPath); sdkFixErr != nil {
-			return MacSDK{}, fmt.Errorf("failed to fix macOS SDK: %w", sdkFixErr)
+	// 1. Extract if missing
+	if _, err := os.Stat(installDir); os.IsNotExist(err) {
+		if !embeddedsk.IsAvailable() {
+			return MacSDK{}, fmt.Errorf("this build of goomba doesn't support macOS targets...")
 		}
-		return MacSDK{Path: sdkPath}, nil
-	}
-
-	archive, err := downloadMacSDK(ctx, defaultMacSDK, cacheRoot)
-	if err != nil {
-		return MacSDK{}, err
-	}
-	if err := extractArchive(archive, installDir); err != nil {
-		return MacSDK{}, err
-	}
-
-	// Inside EnsureMacSDK after extraction:
-	cfDir := filepath.Join(sdkPath, "System/Library/Frameworks/CoreFoundation.framework/Versions/A")
-	tbd := filepath.Join(cfDir, "CoreFoundation.tbd")
-	sym := filepath.Join(cfDir, "CoreFoundation")
-
-	if _, err := os.Stat(tbd); err == nil {
-		if _, err := os.Stat(sym); os.IsNotExist(err) {
-			_ = os.Symlink("CoreFoundation.tbd", sym)
+		fmt.Println(">> Extracting embedded Apple SDK...")
+		if err := embeddedsk.Extract(installDir); err != nil {
+			return MacSDK{}, fmt.Errorf("failed to extract embedded SDK: %w", err)
 		}
 	}
 
-	if stat, err := os.Stat(sdkPath); err == nil && stat.IsDir() {
-		return MacSDK{Path: sdkPath}, nil
-	}
-	return MacSDK{}, errors.New("macos sdk not found after download")
+	return MacSDK{Path: installDir}, nil
 }
 
 func HasCCompiler() bool {
