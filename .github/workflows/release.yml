@@ -19,16 +19,16 @@ jobs:
       - name: Set version.txt from tag
         run: |
           TAG="${GITHUB_REF##*/}"
-          echo "$TAG" > internal/version/version.txt
+          echo "$TAG" > internal/libver/version.txt
           echo "Set version.txt to $TAG"
 
       - name: Validate version.txt is set
         run: |
-          if [ ! -s internal/version/version.txt ]; then
+          if [ ! -s internal/libver/version.txt ]; then
             echo "version.txt is empty or missing!" >&2
             exit 1
           fi
-          echo "version.txt: $(cat internal/version/version.txt)"
+          echo "version.txt: $(cat internal/libver/version.txt)"
 
       - name: Set up Go
         uses: actions/setup-go@v5
