@@ -95,16 +95,23 @@ func zigWrapperScript(zigPath, mode, goos, goarch string) string {
 	target := zigTarget(goos, goarch)
 
 	return fmt.Sprintf(`#!/usr/bin/env sh
-# Filter out incompatible flags
-args=""
+# Filter out incompatible flags without mangling the arg list.
+filtered=""
 for arg in "$@"; do
-  if [ "$arg" = "-Wl,--compress-debug-sections=zlib" ]; then
-    continue
-  fi
-  # This builds a list of arguments properly handled by 'set'
-  set -- "$@" "$arg"
-  shift
+	if [ "$arg" = "-Wl,--compress-debug-sections=zlib" ]; then
+		continue
+	fi
+	filtered="${filtered}
+$arg"
 done
+
+old_ifs=$IFS
+IFS='
+'
+set -f
+set -- $filtered
+set +f
+IFS=$old_ifs
 
 exec "%s" %s -target %s "$@"
 `, quoted, mode, target)

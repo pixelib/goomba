@@ -6,6 +6,7 @@ platforms="${GOOMBA_PLATFORMS:-linux,macos,windows}"
 arch="${GOOMBA_ARCH:-x64,arm64}"
 cgo_enabled="${GOOMBA_CGO_ENABLED:-false}"
 go_args="${GOOMBA_GO_ARGS:-}"
+java_home="${GOOMBA_JAVA_HOME:-}"
 
 if [ -n "$source_dir" ]; then
   cd "$source_dir"
@@ -17,6 +18,9 @@ if [ "$cgo_enabled" = "true" ]; then
 fi
 if [ -n "$go_args" ]; then
   args+=(--go-args "$go_args")
+fi
+if [ -n "$java_home" ]; then
+  args+=(--java-home "$java_home")
 fi
 
 goomba "${args[@]}"

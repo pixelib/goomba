@@ -2,6 +2,7 @@ package build
 
 type Config struct {
 	WorkDir      string
+	OutputBase   string
 	Platforms    []string
 	Archs        []string
 	NoParallel   bool
