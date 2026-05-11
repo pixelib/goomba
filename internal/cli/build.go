@@ -38,6 +38,7 @@ func runBuild(args []string) int {
 	var strict bool
 	var verbose bool
 	var javaHome string
+	var outputBase string
 	var goArgs argsList
 	var cgoEnabled bool
 
@@ -46,9 +47,10 @@ func runBuild(args []string) int {
 	fs.BoolVar(&noParallel, "no-parallel", false, "disable parallel builds")
 	fs.BoolVar(&noTui, "no-tui", false, "disable tui progress")
 	fs.BoolVar(&noValidation, "no-validation", false, "skip validation step")
-	fs.BoolVar(&strict, "strict", false, "fail if any target fails and remove dist output")
+	fs.BoolVar(&strict, "strict", false, "fail if any target fails and remove output directory")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.StringVar(&javaHome, "java-home", "", "override JAVA_HOME for JNI includes")
+	fs.StringVar(&outputBase, "out", "", "output base directory (default: dist)")
 	fs.Var(&goArgs, "go-args", "additional go build arguments, repeatable")
 	fs.BoolVar(&cgoEnabled, "cgo-enabled", false, "enable CGO for builds")
 
@@ -69,6 +71,7 @@ func runBuild(args []string) int {
 
 	cfg := build.Config{
 		WorkDir:      workDir,
+		OutputBase:   outputBase,
 		Platforms:    splitList(platforms),
 		Archs:        splitList(archs),
 		NoParallel:   noParallel,

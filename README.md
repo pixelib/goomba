@@ -27,7 +27,7 @@ Quick example:
 - single binary, no required system tools besides what goomba downloads
 - build matrix support for platforms and architectures
 - optional tui progress and parallel builds
-- predictable output layout under ./dist
+- predictable output layout under ./dist (or --out)
 
 ## Install
 
@@ -69,6 +69,10 @@ goomba build --platforms macos --arch x64,arm64
 goomba build -- --buildmode=c-shared -o dist/libshared.so
 ```
 
+```
+goomba build --out ../dist
+```
+
 ### flags
 
 - --platforms: comma separated list of linux, macos, windows
@@ -76,9 +80,10 @@ goomba build -- --buildmode=c-shared -o dist/libshared.so
 - --no-parallel: run builds one by one
 - --no-tui: disable tui progress output (intended for CI environments)
 - --no-validation: skip validation step
-- --strict: fail if any target fails and remove dist output
+- --strict: fail if any target fails and remove output directory
 - --verbose: enable verbose logging
 - --java-home: override JAVA_HOME for JNI includes
+- --out: output base directory (default: dist, supports ../ paths)
 - --go-args: append go build args, repeatable
 - --cgo-enabled: enable CGO support and handle special platform dependencies, also implies --go-args=CGO_ENABLED=1
 
@@ -93,6 +98,8 @@ Artifacts are placed in:
 ```
 ./dist/<platform>/<arch>/<binary>
 ```
+
+Use --out to change the base directory. Relative paths are resolved from the current working directory and can include .. segments.
 
 ## phases
 

@@ -169,7 +169,7 @@ func printSummary(cfg Config, total int, errs []string, duration time.Duration) 
 
 	fmt.Fprintf(os.Stdout, "summary: %s, total=%d, succeeded=%d, failed=%d, elapsed=%s\n", status, total, succeeded, failed, duration.Round(time.Second))
 	if cfg.Strict && failed > 0 {
-		fmt.Fprintln(os.Stdout, "summary: dist removed due to strict mode")
+		fmt.Fprintf(os.Stdout, "summary: output removed due to strict mode (%s)\n", outputBaseLabel(cfg))
 	}
 }
 
@@ -183,7 +183,7 @@ func handleBuildErrors(cfg Config, errs []string) error {
 		return nil
 	}
 
-	if err := os.RemoveAll(filepath.Join(cfg.WorkDir, "dist")); err != nil {
+	if err := os.RemoveAll(outputBaseDir(cfg)); err != nil {
 		return err
 	}
 	return errors.New(strings.Join(errs, "; "))
@@ -221,7 +221,7 @@ func runValidation(ctx context.Context, cfg Config, goTool deps.GoTool, phase *t
 }
 
 func buildTarget(ctx context.Context, cfg Config, goTool deps.GoTool, target Target, zigTool *deps.ZigTool, macSDK *deps.MacSDK, ui *tui.UI, label string) error {
-	outDir := filepath.Join(cfg.WorkDir, "dist", target.Label, target.GOARCH)
+	outDir := filepath.Join(outputBaseDir(cfg), target.Label, target.GOARCH)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -282,6 +282,25 @@ func buildTarget(ctx context.Context, cfg Config, goTool deps.GoTool, target Tar
 
 func buildDisplayLabel(target Target) string {
 	return fmt.Sprintf("Compiling os:%s arch:%s", target.Label, target.GOARCH)
+}
+
+func outputBaseDir(cfg Config) string {
+	base := strings.TrimSpace(cfg.OutputBase)
+	if base == "" {
+		base = "dist"
+	}
+	if filepath.IsAbs(base) {
+		return filepath.Clean(base)
+	}
+	return filepath.Clean(filepath.Join(cfg.WorkDir, base))
+}
+
+func outputBaseLabel(cfg Config) string {
+	base := strings.TrimSpace(cfg.OutputBase)
+	if base == "" {
+		return "dist"
+	}
+	return base
 }
 
 func runCommandWithLogs(cmd *exec.Cmd, logFn func(string), verbose bool, envKeys []string) error {
