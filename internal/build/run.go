@@ -205,6 +205,11 @@ func runValidation(ctx context.Context, cfg Config, goTool deps.GoTool, phase *t
 	if env := jniCgoEnv(runtime.GOOS, cmd.Env); len(env) > 0 {
 		cmd.Env = util.EnvWithOverrides(cmd.Env, env)
 	}
+	if cfg.CgoEnabled {
+		if env := deps.CgoEnv(runtime.GOOS, runtime.GOARCH, nil, nil); len(env) > 0 {
+			cmd.Env = util.EnvWithOverrides(cmd.Env, env)
+		}
+	}
 	if cfg.NoTui {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
