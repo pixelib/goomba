@@ -124,7 +124,12 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			ui.BuildUpdate(label, "done", "")
 		}
-		printSummary(cfg, len(targets), errs, time.Since(start))
+		duration := time.Since(start)
+		manifest := BuildManifest(cfg, targets, errs, duration)
+		if err := WriteManifest(outputBaseDir(cfg), manifest); err != nil && cfg.Verbose {
+			fmt.Fprintf(os.Stderr, "failed to write manifest: %v\n", err)
+		}
+		printSummary(cfg, len(targets), errs, duration, manifest)
 		return handleBuildErrors(cfg, errs)
 	}
 
@@ -152,11 +157,16 @@ func Run(ctx context.Context, cfg Config) error {
 	for err := range errCh {
 		errs = append(errs, err.Error())
 	}
-	printSummary(cfg, len(targets), errs, time.Since(start))
+	duration := time.Since(start)
+	manifest := BuildManifest(cfg, targets, errs, duration)
+	if err := WriteManifest(outputBaseDir(cfg), manifest); err != nil && cfg.Verbose {
+		fmt.Fprintf(os.Stderr, "failed to write manifest: %v\n", err)
+	}
+	printSummary(cfg, len(targets), errs, duration, manifest)
 	return handleBuildErrors(cfg, errs)
 }
 
-func printSummary(cfg Config, total int, errs []string, duration time.Duration) {
+func printSummary(cfg Config, total int, errs []string, duration time.Duration, m *Manifest) {
 	failed := len(errs)
 	succeeded := total - failed
 	status := "ok"
@@ -170,6 +180,15 @@ func printSummary(cfg Config, total int, errs []string, duration time.Duration) 
 	fmt.Fprintf(os.Stdout, "summary: %s, total=%d, succeeded=%d, failed=%d, elapsed=%s\n", status, total, succeeded, failed, duration.Round(time.Second))
 	if cfg.Strict && failed > 0 {
 		fmt.Fprintf(os.Stdout, "summary: output removed due to strict mode (%s)\n", outputBaseLabel(cfg))
+	}
+
+	if m != nil && len(m.Artifacts) > 0 {
+		fmt.Fprintln(os.Stdout, "")
+		fmt.Fprintf(os.Stdout, "artifacts: %d file(s), %s total\n", len(m.Artifacts), formatSize(m.TotalSize()))
+		for _, a := range m.Artifacts {
+			fmt.Fprintf(os.Stdout, "  %-30s %8s  %s\n", a.Path, formatSize(a.Size), formatSHA256Short(a.SHA256))
+		}
+		fmt.Fprintf(os.Stdout, "manifest: %s/builds.manifest\n", outputBaseLabel(cfg))
 	}
 }
 

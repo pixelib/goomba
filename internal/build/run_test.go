@@ -1,11 +1,13 @@
 package build
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExpandPlaceholders(t *testing.T) {
@@ -202,5 +204,233 @@ func TestBuildMatrixOrdering(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("target %d: expected %q, got %q", i, want[i], got[i])
 		}
+	}
+}
+
+func TestBuildManifest(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := Config{WorkDir: workDir, OutputBase: ""}
+	baseDir := outputBaseDir(cfg)
+
+	targets := []Target{
+		{GOOS: "linux", GOARCH: "amd64", Label: "linux"},
+		{GOOS: "darwin", GOARCH: "arm64", Label: "macos"},
+	}
+
+	// Create artifact files
+	for _, target := range targets {
+		dir := filepath.Join(baseDir, target.Label, target.GOARCH)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		binName := "app"
+		if target.GOOS == "windows" {
+			binName += ".exe"
+		}
+		content := "binary content for " + target.GOOS + "/" + target.GOARCH
+		if err := os.WriteFile(filepath.Join(dir, binName), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := BuildManifest(cfg, targets, nil, 5*time.Second)
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+	if m.Targets != 2 {
+		t.Fatalf("expected 2 targets, got %d", m.Targets)
+	}
+	if m.Succeeded != 2 {
+		t.Fatalf("expected 2 succeeded, got %d", m.Succeeded)
+	}
+	if m.Failed != 0 {
+		t.Fatalf("expected 0 failed, got %d", m.Failed)
+	}
+	if m.Duration != "5s" {
+		t.Fatalf("expected duration 5s, got %s", m.Duration)
+	}
+	if m.GeneratedAt == "" {
+		t.Fatal("expected non-empty generated_at")
+	}
+	if len(m.Artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(m.Artifacts))
+	}
+
+	for _, a := range m.Artifacts {
+		if a.SHA256 == "" {
+			t.Fatalf("expected non-empty sha256 for %s", a.Path)
+		}
+		if a.Size <= 0 {
+			t.Fatalf("expected positive size for %s", a.Path)
+		}
+	}
+
+	// Check paths
+	paths := make([]string, len(m.Artifacts))
+	for i, a := range m.Artifacts {
+		paths[i] = a.Path
+	}
+	if paths[0] != "linux/amd64/app" || paths[1] != "macos/arm64/app" {
+		t.Fatalf("unexpected paths: %v", paths)
+	}
+}
+
+func TestBuildManifestEmpty(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := Config{WorkDir: workDir, OutputBase: ""}
+	m := BuildManifest(cfg, nil, nil, 0)
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+	if len(m.Artifacts) != 0 {
+		t.Fatalf("expected 0 artifacts, got %d", len(m.Artifacts))
+	}
+	if m.Duration != "0s" {
+		t.Fatalf("expected duration 0s, got %s", m.Duration)
+	}
+}
+
+func TestBuildManifestSkipsManifestFile(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := Config{WorkDir: workDir, OutputBase: "out"}
+	baseDir := outputBaseDir(cfg)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a real-looking artifact
+	os.MkdirAll(filepath.Join(baseDir, "linux", "amd64"), 0o755)
+	os.WriteFile(filepath.Join(baseDir, "linux", "amd64", "app"), []byte("data"), 0o644)
+	// Write a pre-existing manifest file
+	os.WriteFile(filepath.Join(baseDir, "builds.manifest"), []byte(`{"old":true}`), 0o644)
+
+	m := BuildManifest(cfg, []Target{{GOOS: "linux", GOARCH: "amd64", Label: "linux"}}, nil, 0)
+	if len(m.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact (manifest excluded), got %d", len(m.Artifacts))
+	}
+	if m.Artifacts[0].Path != "linux/amd64/app" {
+		t.Fatalf("unexpected artifact path: %s", m.Artifacts[0].Path)
+	}
+}
+
+func TestWriteManifest(t *testing.T) {
+	workDir := t.TempDir()
+	m := &Manifest{
+		GeneratedAt: "2026-01-01T00:00:00Z",
+		Targets:     1,
+		Succeeded:   1,
+		Failed:      0,
+		Duration:    "1s",
+		Artifacts: []ManifestEntry{
+			{Path: "linux/amd64/app", Platform: "linux", Arch: "amd64", Size: 100, SHA256: "abcdef"},
+		},
+	}
+
+	if err := WriteManifest(workDir, m); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	manifestPath := filepath.Join(workDir, "builds.manifest")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+
+	var decoded Manifest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if decoded.Targets != 1 {
+		t.Fatalf("expected 1 target, got %d", decoded.Targets)
+	}
+	if len(decoded.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(decoded.Artifacts))
+	}
+	if decoded.Artifacts[0].Path != "linux/amd64/app" {
+		t.Fatalf("unexpected path: %s", decoded.Artifacts[0].Path)
+	}
+	if decoded.Artifacts[0].SHA256 != "abcdef" {
+		t.Fatalf("unexpected sha256: %s", decoded.Artifacts[0].SHA256)
+	}
+}
+
+func TestFormatSize(t *testing.T) {
+	cases := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{100, "100 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1024 * 1024, "1.0 MB"},
+		{1024*1024 + 512*1024, "1.5 MB"},
+	}
+	for _, c := range cases {
+		got := formatSize(c.bytes)
+		if got != c.want {
+			t.Fatalf("formatSize(%d): expected %q, got %q", c.bytes, c.want, got)
+		}
+	}
+}
+
+func TestFormatSHA256Short(t *testing.T) {
+	if got := formatSHA256Short(""); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := formatSHA256Short("abc"); got != "abc" {
+		t.Fatalf("expected abc, got %q", got)
+	}
+	full := "abcdef1234567890abcdef1234567890"
+	if got := formatSHA256Short(full); got != "abcdef123456" {
+		t.Fatalf("expected abcdef123456, got %q", got)
+	}
+}
+
+func TestManifestTotalSize(t *testing.T) {
+	m := &Manifest{
+		Artifacts: []ManifestEntry{
+			{Size: 1000},
+			{Size: 2000},
+			{Size: 3000},
+		},
+	}
+	if total := m.TotalSize(); total != 6000 {
+		t.Fatalf("expected 6000, got %d", total)
+	}
+}
+
+func TestBuildManifestWithFailedTargets(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := Config{WorkDir: workDir, OutputBase: ""}
+	baseDir := outputBaseDir(cfg)
+
+	targets := []Target{
+		{GOOS: "linux", GOARCH: "amd64", Label: "linux"},
+		{GOOS: "darwin", GOARCH: "arm64", Label: "macos"},
+	}
+
+	// Only create first artifact (simulating partial failure)
+	dir := filepath.Join(baseDir, "linux", "amd64")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "app"), []byte("data"), 0o644)
+
+	// With 1 error
+	m := BuildManifest(cfg, targets, []string{"macos/arm64: build failed"}, time.Second)
+	if m.Targets != 2 {
+		t.Fatalf("expected 2 targets, got %d", m.Targets)
+	}
+	if m.Succeeded != 1 {
+		t.Fatalf("expected 1 succeeded, got %d", m.Succeeded)
+	}
+	if m.Failed != 1 {
+		t.Fatalf("expected 1 failed, got %d", m.Failed)
+	}
+	// Only one artifact should be found
+	if len(m.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact (partial build), got %d", len(m.Artifacts))
+	}
+	if m.Artifacts[0].Path != "linux/amd64/app" {
+		t.Fatalf("unexpected artifact path: %s", m.Artifacts[0].Path)
 	}
 }
