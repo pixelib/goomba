@@ -99,7 +99,41 @@ Artifacts are placed in:
 ./dist/<platform>/<arch>/<binary>
 ```
 
-Use --out to change the base directory. Relative paths are resolved from the current working directory and can include .. segments.
+Each run generates a `builds.manifest` JSON file in the output directory with a digest of all artifacts:
+
+```json
+{
+  "generated_at": "2026-05-17T12:00:00Z",
+  "targets": 4,
+  "succeeded": 4,
+  "failed": 0,
+  "duration": "12s",
+  "artifacts": [
+    {
+      "path": "linux/amd64/app",
+      "platform": "linux",
+      "arch": "amd64",
+      "size": 5242880,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}
+```
+
+The summary also prints artifact paths, sizes, and short SHA256 digests:
+
+```
+summary: ok, total=4, succeeded=4, failed=0, elapsed=12s
+
+artifacts: 4 file(s), 20.0 MB total
+  linux/amd64/app                  5.0 MB  e3b0c44298fc
+  linux/arm64/app                  5.0 MB  8bb0cf6eb9b1
+  macos/amd64/app                  5.0 MB  1b4f0e9851b4
+  macos/arm64/app                  5.0 MB  92cfceb39d2d
+manifest: dist/builds.manifest
+```
+
+Use `--out` to change the base directory. Relative paths are resolved from the current working directory and can include .. segments.
 
 ## phases
 
